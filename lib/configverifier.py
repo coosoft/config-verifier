@@ -35,20 +35,18 @@ __author__ = 'Anthony Cooper'
 # Standard Python packages.
 
 import re
+import sys
 from copy import deepcopy
 from typing import Any
+
+# Project Python packages.
+
+from classutils import classinstancemethod
 
 # ***** GLOBAL DATA DECLARATIONS *****
 
 class VerifierError(Exception):
     pass
-
-
-class classinstancemethod(classmethod):
-    def __get__(self, instance, type_):
-        descr_get = super().__get__ if instance is None \
-                                    else self.__func__.__get__
-        return descr_get(instance, type_)
 
 
 class Verifier():
@@ -105,7 +103,7 @@ class Verifier():
     # sequence at the end matches nothing, i.e. '' and undef should go to false.
     # The more complex regexes are generated at load time.
 
-    __SYNTAX_REGEXES = \
+    __syntax_regexes = \
         {'anything'  : re.compile(r'^.+$'),
          'boolean'   : re.compile(r'^(?i:true|yes|y|on|1|'
                                   + r'false|no|n|off|0|(?!.))$'),
@@ -121,14 +119,14 @@ class Verifier():
     # Decorator for class and instance methods.
 
 
-
     # Whether debug messages should be logged or not.
 
     __debug = False
 
     def __init__(self, syntax_tree: dict[str, Any] = None):
         self.__syntax_tree = {} if syntax_tree is None else syntax_tree
-        self.__syntax_regexes = deepcopy(Verifier.__SYNTAX_REGEXES)
+        self.__syntax_regexes = deepcopy(Verifier.__syntax_regexes)
+        self.__debug = Verifier.__debug
 
         # Now we have an initialised internal object, check the specified syntax
         # tree for errors.
@@ -173,14 +171,10 @@ class Verifier():
         return seconds
 
     @classinstancemethod
-    def register_syntax_regex(cls_or_self, name: str, regex: str):
+    def register_syntax_regex(context, name: str, regex: str):
         '''
         Hello there.
         '''
-        if isinstance(cls_or_self, type):
-            regex_table = cls_or_self.__SYNTAX_REGEXES
-        else:
-            regex_table = cls_or_self.__syntax_regexes
 
         # The name must be a simple variable like name and the regex pattern
         # must be properly anchored.
@@ -197,12 +191,229 @@ class Verifier():
         # Register it.
 
         try:
-            regex_table[name] = re.compile(regex)
+            context.__syntax_regexes[name] = re.compile(regex)
         except Exception as e:
             raise VerifierError \
                 (f"Invalid regular expression `{regex}'. Error given was: {e}.")
 
-        return
+    def __check_syntax_tree(self,
+                            syntax: dict[str, Any],
+                            seen:   set[int] | None = None):
+        syntax_tree = {} if syntax_tree is None else syntax_tree
+    
+        # Guard against infinite recursion due to loops in the syntax tree
+        # (which are allowed, e.g. cascading menu definitions).
+    
+        if id(syntax) in seen:
+            return
+        seen.update(id(syntax))
+    
+        # Check arrays, these are not only lists but also branch points.
+
+        match syntax:
+
+            case list():
+    
+                # Check for any hashes, records, making sure that if there are
+                # any that they are of the correct type (one unique record, any
+                # single field or typed).
+    
+                check_hashes_in_array(syntax)
+
+                # Scan through the array processing each type of entry.
+    
+                for syn_el in syntax:
+                    if not isinstance(syn_el, (dict, list)):
+                        if self.__debug:
+                            Verifier.__logger \
+                                (f"Checking syntax tree element `{syn_el}'.")
+                        self.match_syntax(syn_el)
+                    else:
+                        self.__check_syntax_tree(syn_el, seen)
+
+            case dict():
+                for key in syntax:
+                    value = syntax[key]
+                    self.match_syntax(key)
+                    if not isinstance(syn_el, (dict, list)):
+                        self.match_syntax(value)
+                    else:
+                        self.__check_syntax_tree(value, seen)
+
+            case _:
+                raise VerifierError('Syntax tree has unsupported element of '
+                                    + f"type `{type(syntax)}'.")
+
+    def __verify_node(self,
+                      data:   dict[str, Any],
+                      syntax: dict[str, Any],
+                      path:   list[str],
+                      status: list[str]):
+
+        # Check arrays, these are not only lists but also branch points.
+
+        if isinstance(data_type, list) and isinstance(syntax_type, list):
+            self.__verify_arrays(data, syntax, path, status)
+
+        # Check records.
+
+        elif isinstance(data_type, dict) and isinstance(syntax_type, dict):
+            self.__verify_hashes(data, syntax, path, status)
+
+        # We have a mismatch.
+
+        elif isinstance(syntax_type, list):
+            status.append(f'The {path} field is not a list.\n')
+        else:
+            status.append(f'The {path} field is not a record.\n')
+
+    def __verify_arrays(self,
+                        data:   dict[str, Any],
+                        syntax: dict[str, Any],
+                        path:   list[str],
+                        status: list[str]):
+
+        hash_state = None
+
+        # Scan through the array looking for a match based upon scalar values
+        # and container types.
+
+        for i, item in enumerate(data):
+
+            # We are comparing scalar values.
+
+            if not isinstance(entry, (dict, list)):
+                errs = []
+                for syn_el in syntax:
+                    if not isinstance(syn_el, (dict, list)):
+                        if self.__debug:
+                            Verifier.__logger(f"Comparing `{path}->[{i}]:"
+                                              + f"{item}' against `{syn_el}'.")
+                        err = []
+                        if self.match_syntax(syn_el, item, err):
+                            continue
+                        elif err:
+                            errs.extend(err)
+                else:
+                    if item is None:
+                        value = 'undefined value'
+                    else:
+                        value = f"value `{item}'"
+                    if errs:
+                        msg = ' (' + ' or '.join(errs) + ')'
+                    status.append(f"Unexpected {value} found at {path}->[{i}]. "
+                                  + "It either doesn't match the expected "
+                                  + f'value format{msg}, or a list or record '
+                                  + 'was expected instead.\n')
+
+            # We are comparing arrays.
+
+            elif isinstance(item, list):
+
+                local_status = []
+
+                # As we are going off piste into the unknown (arrays don't
+                # really give us much clue as to what we are looking at nor
+                # where decisively to go), we may need to backtrack, so use a
+                # local status string and then only report anything wrong if we
+                # don't find a match at all.
+
+                for syn_el in syntax:
+                    if isinstance(syn_el, list):
+                        if self.__debug:
+                            Verifier.__logger(f"Comparing `{path}->[{i}]:"
+                                              + "(list)' against `(list)'.")
+                        local_status = []
+                        selff.__verify_node(item,
+                                            syn_el,
+                                            f'{path}->[{i}]',
+                                            local_status)
+                        if not local_status:
+                            continue
+                else:
+
+                    # Only report an error once for each route taken through the
+                    # syntax tree.
+
+                    if not local_status:
+                        status.append \
+                            (f"Unexpected list found at {path}->[{i}].\n")
+                    else:
+                        status.append(local_status)
+
+            # We are comparing hashes, records, so look to see if there is a
+            # common field in one of the syntax hashes. If so then take that
+            # branch.
+
+            elif isinstance(item, dict):
+
+                # If we haven't done it already, determine what type of hashes
+                # we have in the syntax array (just one or multiple that are
+                # typed in some way).
+
+                if hash_state is None:
+                    hash_state = Verifier.__check_hashes_in_array(syntax)
+
+                # If there is one hash in the syntax array then that's our path.
+
+                if hash_state == Verifier.__ONE_HASH:
+                    self.__take_singular_hash_path(data,
+                                                   syntax,
+                                                   path,
+                                                   status,
+                                                   i)
+                    continue
+
+                # With multiple hashes in a syntax array we only allow typed
+                # hashes.
+
+                # If the data hash only has one field then treat that field as
+                # the implicitly typed field.
+
+                if len(item) == 1:
+                    if (hash_state & Verifier.__SINGLE_FIELD_HASHES) \
+                       and self.__take_single_field_hashes_path(data,
+                                                                syntax,
+                                                                path,
+                                                                status,
+                                                                i):
+                        continue
+                    status.append('Unexpected single type field record with a '
+                                  + f"type name of `{item[0].keys()}' found at "
+                                  + f"{path}->[{i}].\n")
+
+                # We have multiple fields in the data hash so one of them must
+                # be explicitly typed with `t:'.
+
+                else:
+                    if (hash_state & Verifier.__TYPED_FIELD_HASHES) \
+                       and self.__take_typed_hashes_path(data,
+                                                         syntax,
+                                                         path,
+                                                         status,
+                                                         i):
+                        continue
+                    status.append('Unexpected multi-field record that is '
+                                  + 'either untyped or an unrecognised type '
+                                  + f'found at {path}->[{i}].\n')
+
+            # We have something other than a scalar, array or hash. This isn't
+            # supported.
+
+            else:
+                status.append(f"Unsupported data type `{type(item)}' found at "
+                              + f'{path}->[{i}].\n')
+
+        # Unlikely but just check for empty arrays.
+
+        if not data and not re.search(syntax[0],
+                                      r'^l:choice_(?:list|value)'
+                                      + r'(?:,allow_empty_list)?$'):
+            status.append(f'Empty list found at {path}. This is not allowed.\n')
+
+    @staticmethod
+    def __logger(msg: str):
+        print(msg, file = sys.stderr)
 
 
 def main():
@@ -230,7 +441,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BaseException as be:
+        print(f'Exception: {be}')
 
 
 
@@ -330,142 +544,6 @@ if __name__ == '__main__':
 #use parent qw(Exporter);
 #
 #our $VERSION = '1.0';
-###############################################################################
-##
-##   Routine      - register_syntax_regex
-##
-##   Description  - Public routine. See the POD section for further details.
-##
-###############################################################################
-#
-#
-#
-#sub register_syntax_regex($self, $name, $regex)
-#{
-#
-#    my $regex_table;
-#
-#    if (ref($self) eq '')
-#    {
-#        $regex_table = \%Syntax_Regexes;
-#    }
-#    else
-#    {
-#        $regex_table = $Class_Objects{$self->{+__PACKAGE__}}->{syntax_regexes};
-#    }
-#
-#    # The name must be a simple variable like name and the regex pattern must be
-#    # properly anchored.
-#
-#    throw('`%s\' is not a suitable syntax element name.', $name)
-#        if ($name !~ m/^[-[:alnum:]_.]+$/);
-#    throw('`%s\' is not anchored to the start and end of the string.', $regex)
-#        if ($regex !~ m/^\^.*\$$/);
-#    if (exists($Capturing_Regexes{$name}) or $name eq 'boolean')
-#    {
-#        throw('Changing `%s\' is not permitted.', $name);
-#    }
-#
-#    # Register it.
-#
-#    local $@;
-#    eval
-#    {
-#        $regex_table->{$name} = qr/$regex/;
-#        1;
-#    }
-#    or do
-#    {
-#        my $err = $@;
-#        $err =~ s/ at .+ line \d+\..*//gs;
-#        throw($err);
-#    };
-#
-#    return;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - check_syntax_tree
-##
-##   Description  - Checks the specified syntax tree making sure that it is
-##                  valid.
-##
-##   Data         - $this   : The internal private object.
-##                  $syntax : A reference to the syntax tree that is to be
-##                            checked.
-##                  $seen   : A reference to a hash containing the unique
-##                            reference addresses of those containers that have
-##                            already been checked within the syntax tree.
-##
-###############################################################################
-#
-#
-#
-#sub check_syntax_tree($this, $syntax, $seen = {})
-#{
-#
-#    # Guard against infinite recursion due to loops in the syntax tree (which
-#    # are allowed, e.g. cascading menu definitions).
-#
-#    return if (exists($seen->{refaddr($syntax)}));
-#    $seen->{refaddr($syntax)} = undef;
-#
-#    # Check arrays, these are not only lists but also branch points.
-#
-#    my $type = ref($syntax);
-#    if ($type eq 'ARRAY')
-#    {
-#
-#        # Check for any hashes, records, making sure that if there are any that
-#        # they are of the correct type (one unique record, single field or
-#        # typed).
-#
-#        check_hashes_in_array($syntax);
-#
-#        # Scan through the array processing each type of entry.
-#
-#        foreach my $syn_el (@$syntax)
-#        {
-#            if (ref($syn_el) eq '')
-#            {
-#                logger('Checking syntax tree element `%s\'.', $syn_el)
-#                    if ($this->{debug});
-#                match_syntax($this, $syn_el);
-#            }
-#            else
-#            {
-#                check_syntax_tree($this, $syn_el, $seen);
-#            }
-#        }
-#
-#    }
-#    elsif ($type eq 'HASH')
-#    {
-#        foreach my $key (keys(%$syntax))
-#        {
-#            my $value = $syntax->{$key};
-#            match_syntax($this, $key);
-#            if (ref($value) eq '')
-#            {
-#                match_syntax($this, $value);
-#            }
-#            else
-#            {
-#                check_syntax_tree($this, $value, $seen);
-#            }
-#        }
-#    }
-#    else
-#    {
-#        throw('Syntax tree has unsupported element of type `%s\'.', $type);
-#    }
-#
-#    return;
-#
-#}
-##
 ###############################################################################
 ##
 ##   Routine      - verify_node

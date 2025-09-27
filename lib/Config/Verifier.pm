@@ -641,6 +641,9 @@ sub verify_arrays($this, $data, $syntax, $path, $status)
             # string and then only report anything wrong if we don't find a
             # match at all.
 
+            # :TODO: Drop the $j index and convert into simple foreach $syn_el
+            # loop.
+
             foreach my $j (0 .. $#$syntax)
             {
                 if (ref($syntax->[$j]) eq 'ARRAY')
