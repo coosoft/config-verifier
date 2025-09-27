@@ -36,6 +36,7 @@ __author__ = 'Anthony Cooper'
 
 import re
 import sys
+from collections.adb import Iterable
 from copy import deepcopy
 from typing import Any
 
@@ -200,43 +201,43 @@ class Verifier():
                             syntax: dict[str, Any],
                             seen:   set[int] | None = None):
         syntax_tree = {} if syntax_tree is None else syntax_tree
-    
+
         # Guard against infinite recursion due to loops in the syntax tree
         # (which are allowed, e.g. cascading menu definitions).
-    
+
         if id(syntax) in seen:
             return
         seen.update(id(syntax))
-    
+
         # Check arrays, these are not only lists but also branch points.
 
         match syntax:
 
             case list():
-    
+
                 # Check for any hashes, records, making sure that if there are
                 # any that they are of the correct type (one unique record, any
                 # single field or typed).
-    
+
                 check_hashes_in_array(syntax)
 
                 # Scan through the array processing each type of entry.
-    
+
                 for syn_el in syntax:
-                    if not isinstance(syn_el, (dict, list)):
+                    if Verifier.__is_scalar(syn_el):
                         if self.__debug:
                             Verifier.__logger \
                                 (f"Checking syntax tree element `{syn_el}'.")
-                        self.match_syntax(syn_el)
+                        self.__match_syntax(syn_el)
                     else:
                         self.__check_syntax_tree(syn_el, seen)
 
             case dict():
                 for key in syntax:
                     value = syntax[key]
-                    self.match_syntax(key)
-                    if not isinstance(syn_el, (dict, list)):
-                        self.match_syntax(value)
+                    self.__match_syntax(key)
+                    if Verifier.__is_scalar(syn_el):
+                        self.__match_syntax(value)
                     else:
                         self.__check_syntax_tree(value, seen)
 
@@ -252,17 +253,17 @@ class Verifier():
 
         # Check arrays, these are not only lists but also branch points.
 
-        if isinstance(data_type, list) and isinstance(syntax_type, list):
+        if isinstance(data, list) and isinstance(syntax, list):
             self.__verify_arrays(data, syntax, path, status)
 
         # Check records.
 
-        elif isinstance(data_type, dict) and isinstance(syntax_type, dict):
+        elif isinstance(data, dict) and isinstance(syntax, dict):
             self.__verify_hashes(data, syntax, path, status)
 
         # We have a mismatch.
 
-        elif isinstance(syntax_type, list):
+        elif isinstance(syntax, list):
             status.append(f'The {path} field is not a list.\n')
         else:
             status.append(f'The {path} field is not a record.\n')
@@ -282,16 +283,16 @@ class Verifier():
 
             # We are comparing scalar values.
 
-            if not isinstance(entry, (dict, list)):
+            if Verifier.__is_scalar(item):
                 errs = []
                 for syn_el in syntax:
-                    if not isinstance(syn_el, (dict, list)):
+                    if Verifier.__is_scalar(syn_el):
                         if self.__debug:
                             Verifier.__logger(f"Comparing `{path}->[{i}]:"
                                               + f"{item}' against `{syn_el}'.")
                         err = []
-                        if self.match_syntax(syn_el, item, err):
-                            continue
+                        if self.__match_syntax(syn_el, item, err):
+                            break
                         elif err:
                             errs.extend(err)
                 else:
@@ -329,7 +330,7 @@ class Verifier():
                                             f'{path}->[{i}]',
                                             local_status)
                         if not local_status:
-                            continue
+                            break
                 else:
 
                     # Only report an error once for each route taken through the
@@ -362,7 +363,7 @@ class Verifier():
                                                    path,
                                                    status,
                                                    i)
-                    continue
+                    break
 
                 # With multiple hashes in a syntax array we only allow typed
                 # hashes.
@@ -377,7 +378,7 @@ class Verifier():
                                                                 path,
                                                                 status,
                                                                 i):
-                        continue
+                        break
                     status.append('Unexpected single type field record with a '
                                   + f"type name of `{item[0].keys()}' found at "
                                   + f"{path}->[{i}].\n")
@@ -392,7 +393,7 @@ class Verifier():
                                                          path,
                                                          status,
                                                          i):
-                        continue
+                        break
                     status.append('Unexpected multi-field record that is '
                                   + 'either untyped or an unrecognised type '
                                   + f'found at {path}->[{i}].\n')
@@ -406,10 +407,163 @@ class Verifier():
 
         # Unlikely but just check for empty arrays.
 
-        if not data and not re.search(syntax[0],
-                                      r'^l:choice_(?:list|value)'
-                                      + r'(?:,allow_empty_list)?$'):
+        if not data and not re.search(r'^l:choice_(?:list|value)'
+                                          + r'(?:,allow_empty_list)?$',
+                                      syntax[0]):
             status.append(f'Empty list found at {path}. This is not allowed.\n')
+
+    def __verify_hashes(self,
+                        data:   dict[str, Any],
+                        syntax: dict[str, Any],
+                        path:   list[str],
+                        status: list[str]):
+
+        # Check that all mandatory fields are present.
+
+        for key in syntax:
+            if mandatory_field := re.search(r'^[mt]:(.+)$', key):
+                if mandatory_field[1] not in data:
+                    status.append(f'The {path} record does not contain the '
+                                  + 'mandatory field `'
+                                  + f"{mandatory_field[1]}'.\n")
+
+        # Check each field.
+
+        for field in data:
+            syn_el = None
+
+            # Locate the matching field in the syntax tree.
+
+            for ftype in ('m:', 's:', 't:'):
+                key = ftype + field
+                if key in syntax:
+                    syn_el = syntax[key]
+                    break
+            if syn_el is None:
+                for key in syntax:
+                    if self.__match_syntax(key, field)):
+                        syn_el = syntax[key]
+                        break
+
+            # Deal with unknown fields, which are ok if we have custom fields in
+            # the record.
+
+            if syn_el is None:
+                status.append(f'The {path} %s record contains an invalid field '
+                              + f"`{field}'.\n")
+                continue
+
+            # Skip custom fields.
+
+            if (syn_el == 'c:'):
+                continue
+
+            # Ok now check that the value is correct and process it.
+
+            my $syntax_type = ref($syn_el);
+            my $field_type = ref($data->{$field});
+
+            if self.__debug:
+                if Verifier.__is_scalar(data[field]):
+                    field_str = data[field]
+                else:
+                    field_str = f'({type(data[field])})'
+                if Verifier.__is_scalar(syn_el):
+                    syn_el_str = syn_el
+                else:
+                    syn_el_str = f'({type(syn_el)})'
+                logger(f"Comparing `{path}->{field}:{field_str}' against "
+                       + f"`{syn_el_st}'.")
+
+            # Scalar - scalar.
+
+            if Verifier.__is_scalar(data[field]):
+CONT_FROM_HERE
+            if ($syntax_type eq '' and $field_type eq '')
+            {
+                my $err = '';
+                if (not match_syntax($this, $syn_el, $data->{$field}, \$err))
+                {
+                    $$status .= sprintf('Unexpected %s found at %s. It doesn\'t '
+                                            . 'match the expected value '
+                                            . "format%s.\n",
+                                        defined($data->{$field})
+                                            ? 'value `' . $data->{$field} . '\''
+                                            : 'undefined value',
+                                        $path . '->' . $field,
+                                        ($err ne '') ? " ($err)" : '');
+                }
+            }
+
+            # List of choice values, i.e. a single field that can match against one
+            # of the values in the list (which may include arrays and hashes as well
+            # as scalars).
+
+            elsif ($syntax_type eq 'ARRAY' and $syn_el->[0] =~ m/^l:choice_value/)
+            {
+
+                # This is done simply by faking an array with the one entry being
+                # the data item and then handling it as a standard array. We then
+                # alter any returned message to remove this fake array from the
+                # path.
+
+                my $local_status = '';
+                my $new_path = $path . '->' . $field;
+                verify_arrays($this,
+                              [$data->{$field}],
+                              $syn_el,
+                              $new_path,
+                              \$local_status);
+                if ($local_status ne '')
+                {
+                    $local_status =~
+                        s/^(.+? \Q${new_path}\E)->\[0\](.*)$/${1}${2}/s;
+                    $$status .= $local_status;
+                }
+
+            }
+
+            # Array - array or hash - hash.
+
+            elsif (($syntax_type eq 'ARRAY' or $syntax_type eq 'HASH')
+                   and $syntax_type eq $field_type)
+            {
+                verify_node($this,
+                            $data->{$field},
+                            $syn_el,
+                            $path . '->' . $field,
+                            $status);
+            }
+
+            # Assorted mismatches.
+
+            elsif ($syntax_type eq '')
+            {
+                $$status .= sprintf('The %s field does not contain a simple '
+                                        . "value.\n",
+                                    $path . '->' . $field);
+            }
+            elsif ($syntax_type eq 'ARRAY')
+            {
+                $$status .= sprintf("The %s field is not a list.\n",
+                                    $path . '->' . $field);
+            }
+            else
+            {
+                $$status .= sprintf("The %s field is not a record.\n",
+                                    $path . '->' . $field);
+            }
+
+        }
+
+        return;
+
+    }
+
+    @staticmethod
+    def __is_scalar(item: Any) -> bool:
+        return (not isinstance(item, Iterable)
+                or isinstance(item, (str, bytes)))
 
     @staticmethod
     def __logger(msg: str):
@@ -544,472 +698,6 @@ if __name__ == '__main__':
 #use parent qw(Exporter);
 #
 #our $VERSION = '1.0';
-###############################################################################
-##
-##   Routine      - verify_node
-##
-##   Description  - Checks the specified structure making sure that the domain
-##                  specific syntax is ok.
-##
-##   Data         - $this   : The internal private object.
-##                  $data   : A reference to the data item within the record
-##                            that is to be checked. This is either a reference
-##                            to an array or a hash as scalars are leaf nodes
-##                            and processed inline.
-##                  $syntax : A reference to that part of the syntax tree that
-##                            is going to be used to check the data referenced
-##                            by $data.
-##                  $path   : A string containing the current path through the
-##                            record for the current item in $data.
-##                  $status : A reference to a string that is to contain a
-##                            description of what is wrong. If everything is ok
-##                            then this string will be empty.
-##
-###############################################################################
-#
-#
-#
-#sub verify_node($this, $data, $syntax, $path, $status)
-#{
-#
-#    my $data_type = ref($data);
-#    my $syntax_type = ref($syntax);
-#
-#    # Check arrays, these are not only lists but also branch points.
-#
-#    if ($data_type eq 'ARRAY' and $syntax_type eq 'ARRAY')
-#    {
-#        verify_arrays($this, $data, $syntax, $path, $status);
-#    }
-#
-#    # Check records.
-#
-#    elsif ($data_type eq 'HASH' and $syntax_type eq 'HASH')
-#    {
-#        verify_hashes($this, $data, $syntax, $path, $status);
-#    }
-#
-#    # We have a mismatch.
-#
-#    elsif ($syntax_type eq 'ARRAY')
-#    {
-#        $$status .= sprintf("The %s field is not a list.\n", $path);
-#    }
-#    else
-#    {
-#        $$status .= sprintf("The %s field is not a record.\n", $path);
-#    }
-#
-#    return;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - verify_arrays
-##
-##   Description  - Checks the specified structure making sure that the domain
-##                  specific syntax is ok.
-##
-##   Data         - $this   : The internal private object.
-##                  $data   : A reference to the array data item within the
-##                            record that is to be checked.
-##                  $syntax : A reference to that part of the syntax tree that
-##                            is going to be used to check the data referenced
-##                            by $data.
-##                  $path   : A string containing the current path through the
-##                            record for the current item in $data.
-##                  $status : A reference to a string that is to contain a
-##                            description of what is wrong. If everything is ok
-##                            then this string will be empty.
-##
-###############################################################################
-#
-#
-#
-#sub verify_arrays($this, $data, $syntax, $path, $status)
-#{
-#
-#    my $hash_state;
-#
-#    # Scan through the array looking for a match based upon scalar values and
-#    # container types.
-#
-#    array_element: foreach my $i (0 .. $#$data)
-#    {
-#
-#        my $data_type = ref($data->[$i]);
-#
-#        # We are comparing scalar values.
-#
-#        if ($data_type eq '')
-#        {
-#            my @errs;
-#            foreach my $syn_el (@$syntax)
-#            {
-#                if (ref($syn_el) eq '')
-#                {
-#                    logger('Comparing `%s->[%u]:%s\' against `%s\'.',
-#                           $path,
-#                           $i,
-#                           $data->[$i],
-#                           $syn_el)
-#                        if ($this->{debug});
-#                    my $err = '';
-#                    if (match_syntax($this, $syn_el, $data->[$i], \$err))
-#                    {
-#                        next array_element;
-#                    }
-#                    elsif ($err ne '')
-#                    {
-#                        push(@errs, $err);
-#                    }
-#                }
-#            }
-#            $$status .= sprintf('Unexpected %s found at %s->[%u]. It either '
-#                                    . 'doesn\'t match the expected value '
-#                                    . 'format%s, or a list or record was '
-#                                    . "expected instead.\n",
-#                                defined($data->[$i])
-#                                    ? 'value `' . $data->[$i] . '\''
-#                                    : 'undefined value',
-#                                $path,
-#                                $i,
-#                                (@errs) ? ' (' . join(' or ', @errs) . ')'
-#                                        : '');
-#        }
-#
-#        # We are comparing arrays.
-#
-#        elsif ($data_type eq 'ARRAY')
-#        {
-#
-#            my $local_status = '';
-#
-#            # As we are going off piste into the unknown (arrays don't really
-#            # give us much clue as to what we are looking at nor where
-#            # decisively to go), we may need to backtrack, so use a local status
-#            # string and then only report anything wrong if we don't find a
-#            # match at all.
-#
-#            foreach my $j (0 .. $#$syntax)
-#            {
-#                if (ref($syntax->[$j]) eq 'ARRAY')
-#                {
-#                    logger('Comparing `%s->[%u]:(ARRAY)\' against `(ARRAY)\'.',
-#                           $path,
-#                           $i)
-#                        if ($this->{debug});
-#                    $local_status = '';
-#                    verify_node($this,
-#                                $data->[$i],
-#                                $syntax->[$j],
-#                                $path . '->[' . $i . ']',
-#                                \$local_status);
-#                    next array_element if ($local_status eq '');
-#                }
-#            }
-#
-#            # Only report an error once for each route taken through the syntax
-#            # tree.
-#
-#            if ($local_status eq '')
-#            {
-#                $$status .= sprintf("Unexpected list found at %s->[%u].\n",
-#                                    $path,
-#                                    $i);
-#            }
-#            else
-#            {
-#                $$status .= $local_status;
-#            }
-#
-#        }
-#
-#        # We are comparing hashes, records, so look to see if there is a common
-#        # field in one of the syntax hashes. If so then take that branch.
-#
-#        elsif ($data_type eq 'HASH')
-#        {
-#
-#            # If we haven't done it already, determine what type of hashes we
-#            # have in the syntax array (just one or multiple that are typed in
-#            # some way).
-#
-#            $hash_state = check_hashes_in_array($syntax)
-#                unless (defined($hash_state));
-#
-#            # If there is one hash in the syntax array then that's our path.
-#
-#            if ($hash_state == ONE_HASH)
-#            {
-#                take_singular_hash_path($this,
-#                                        $data,
-#                                        $syntax,
-#                                        $path,
-#                                        $status,
-#                                        $i);
-#                next array_element;
-#            }
-#
-#            # With multiple hashes in a syntax array we only allow typed hashes.
-#
-#            # If the data hash only has one field then treat that field as the
-#            # implicitly typed field.
-#
-#            if (keys(%{$data->[$i]}) == 1)
-#            {
-#                if (($hash_state & SINGLE_FIELD_HASHES)
-#                    and take_single_field_hashes_path($this,
-#                                                      $data,
-#                                                      $syntax,
-#                                                      $path,
-#                                                      $status,
-#                                                      $i))
-#                {
-#                    next array_element;
-#                }
-#                $$status .= sprintf('Unexpected single type field record with '
-#                                        . 'a type name of `%s\' found at '
-#                                        . "%s->[%u].\n",
-#                            (keys(%{$data->[$i]}))[0],
-#                            $path,
-#                            $i);
-#            }
-#
-#            # We have multiple fields in the data hash so one of them must be
-#            # explicitly typed with `t:'.
-#
-#            else
-#            {
-#                if (($hash_state & TYPED_FIELD_HASHES)
-#                    and take_typed_hashes_path($this,
-#                                               $data,
-#                                               $syntax,
-#                                               $path,
-#                                               $status,
-#                                               $i))
-#                {
-#                    next array_element;
-#                }
-#                $$status .= sprintf('Unexpected multi-field record that is '
-#                                        . 'either untyped or an unrecognised '
-#                                        . "type found at %s->[%u].\n",
-#                                    $path,
-#                                    $i);
-#            }
-#
-#        }
-#
-#        # We have something other than a scalar, array or hash. This isn't
-#        # supported.
-#
-#        else
-#        {
-#            $$status .= sprintf('Unsupported data type `%s\' found at '
-#                                    . "%s->[%u].\n",
-#                                $data_type,
-#                                $path,
-#                                $i);
-#        }
-#
-#    }
-#
-#    # Unlikely but just check for empty arrays.
-#
-#    if (@$data == 0 and $syntax->[0]
-#        !~ m/^l:choice_(?:list|value)(?:,allow_empty_list)?$/)
-#    {
-#        $$status .= sprintf("Empty list found at %s. This is not allowed.\n",
-#                            $path);
-#    }
-#
-#    return;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - verify_hashes
-##
-##   Description  - Checks the specified structure making sure that the domain
-##                  specific syntax is ok.
-##
-##   Data         - $this   : The internal private object.
-##                  $data   : A reference to the hash data item within the
-##                            record that is to be checked.
-##                  $syntax : A reference to that part of the syntax tree that
-##                            is going to be used to check the data referenced
-##                            by $data.
-##                  $path   : A string containing the current path through the
-##                            record for the current item in $data.
-##                  $status : A reference to a string that is to contain a
-##                            description of what is wrong. If everything is ok
-##                            then this string will be empty.
-##
-###############################################################################
-#
-#
-#
-#sub verify_hashes($this, $data, $syntax, $path, $status)
-#{
-#
-#    # Check that all mandatory fields are present.
-#
-#    foreach my $key (keys(%$syntax))
-#    {
-#        if ($key =~ m/^[mt]\:(.+)$/)
-#        {
-#            my $mandatory_field = $1;
-#            if (not exists($data->{$mandatory_field}))
-#            {
-#                $$status .= sprintf('The %s record does not contain the '
-#                                        . "mandatory field `%s'.\n",
-#                                    $path,
-#                                    $mandatory_field);
-#            }
-#        }
-#    }
-#
-#    # Check each field.
-#
-#    hash_key: foreach my $field (keys(%$data))
-#    {
-#
-#        my $syn_el;
-#
-#        # Locate the matching field in the syntax tree.
-#
-#        foreach my $type ('m:', 's:', 't:')
-#        {
-#            if (exists($syntax->{$type . $field}))
-#            {
-#                $syn_el = $syntax->{$type . $field};
-#                last;
-#            }
-#        }
-#        if (not defined($syn_el))
-#        {
-#            foreach my $key (keys(%$syntax))
-#            {
-#                if (match_syntax($this, $key, $field))
-#                {
-#                    $syn_el = $syntax->{$key};
-#                    last;
-#                }
-#            }
-#        }
-#
-#        # Deal with unknown fields, which are ok if we have custom fields in the
-#        # record.
-#
-#        if (not defined($syn_el))
-#        {
-#            $$status .= sprintf('The %s record contains an invalid field '
-#                                    . "`%s'.\n",
-#                                $path,
-#                                $field);
-#            next hash_key;
-#        }
-#
-#        # Skip custom fields.
-#
-#        next hash_key if ($syn_el eq 'c:');
-#
-#        # Ok now check that the value is correct and process it.
-#
-#        my $syntax_type = ref($syn_el);
-#        my $field_type = ref($data->{$field});
-#
-#        logger('Comparing `%s->%s:%s\' against `%s\'.',
-#               $path,
-#               $field,
-#               ($field_type eq '') ? $data->{$field} : '(' . $field_type . ')',
-#               ($syntax_type eq '') ? $syn_el : '(' . $syntax_type . ')')
-#            if ($this->{debug});
-#
-#        # Scalar - scalar.
-#
-#        if ($syntax_type eq '' and $field_type eq '')
-#        {
-#            my $err = '';
-#            if (not match_syntax($this, $syn_el, $data->{$field}, \$err))
-#            {
-#                $$status .= sprintf('Unexpected %s found at %s. It doesn\'t '
-#                                        . 'match the expected value '
-#                                        . "format%s.\n",
-#                                    defined($data->{$field})
-#                                        ? 'value `' . $data->{$field} . '\''
-#                                        : 'undefined value',
-#                                    $path . '->' . $field,
-#                                    ($err ne '') ? " ($err)" : '');
-#            }
-#        }
-#
-#        # List of choice values, i.e. a single field that can match against one
-#        # of the values in the list (which may include arrays and hashes as well
-#        # as scalars).
-#
-#        elsif ($syntax_type eq 'ARRAY' and $syn_el->[0] =~ m/^l:choice_value/)
-#        {
-#
-#            # This is done simply by faking an array with the one entry being
-#            # the data item and then handling it as a standard array. We then
-#            # alter any returned message to remove this fake array from the
-#            # path.
-#
-#            my $local_status = '';
-#            my $new_path = $path . '->' . $field;
-#            verify_arrays($this,
-#                          [$data->{$field}],
-#                          $syn_el,
-#                          $new_path,
-#                          \$local_status);
-#            if ($local_status ne '')
-#            {
-#                $local_status =~
-#                    s/^(.+? \Q${new_path}\E)->\[0\](.*)$/${1}${2}/s;
-#                $$status .= $local_status;
-#            }
-#
-#        }
-#
-#        # Array - array or hash - hash.
-#
-#        elsif (($syntax_type eq 'ARRAY' or $syntax_type eq 'HASH')
-#               and $syntax_type eq $field_type)
-#        {
-#            verify_node($this,
-#                        $data->{$field},
-#                        $syn_el,
-#                        $path . '->' . $field,
-#                        $status);
-#        }
-#
-#        # Assorted mismatches.
-#
-#        elsif ($syntax_type eq '')
-#        {
-#            $$status .= sprintf('The %s field does not contain a simple '
-#                                    . "value.\n",
-#                                $path . '->' . $field);
-#        }
-#        elsif ($syntax_type eq 'ARRAY')
-#        {
-#            $$status .= sprintf("The %s field is not a list.\n",
-#                                $path . '->' . $field);
-#        }
-#        else
-#        {
-#            $$status .= sprintf("The %s field is not a record.\n",
-#                                $path . '->' . $field);
-#        }
-#
-#    }
-#
-#    return;
-#
-#}
 ##
 ###############################################################################
 ##

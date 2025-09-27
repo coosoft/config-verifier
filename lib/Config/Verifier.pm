@@ -810,6 +810,7 @@ sub verify_hashes($this, $data, $syntax, $path, $status)
 
     foreach my $key (keys(%$syntax))
     {
+        # :TODO: remove superfluous \ in front of :. 
         if ($key =~ m/^[mt]\:(.+)$/)
         {
             my $mandatory_field = $1;
