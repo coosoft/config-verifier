@@ -36,7 +36,7 @@ __author__ = 'Anthony Cooper'
 
 import re
 import sys
-from collections.adb import Iterable
+from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
@@ -440,7 +440,7 @@ class Verifier():
                     break
             if syn_el is None:
                 for key in syntax:
-                    if self.__match_syntax(key, field)):
+                    if self.__match_syntax(key, field):
                         syn_el = syntax[key]
                         break
 
@@ -480,7 +480,7 @@ class Verifier():
                     if data[field] is not None:
                         msg = f"value `{data[field]}'"
                     else:
-                        msg = "undefined value"
+                        msg = 'undefined value'
                     emsg = f' ({"".join(err)})' if err else ''
                     status.append(f'Unexpected {msg} found at {path}->{field}. '
                                   + "It doesn't match the expected value "
@@ -504,51 +504,96 @@ class Verifier():
                                      syn_el,
                                      new_path,
                                      err)
-CONT-FROM-HERE
                 if err:
-                    err $local_status =~
-                        s/^(.+? \Q${new_path}\E)->\[0\](.*)$/${1}${2}/s;
-                    $$status .= $local_status;
-                }
-
-            }
+                    emsg = ''.join(err)
+                    emsg = re.sub(r'^(.+? ' + re.escape(new_path)
+                                      + r')->\[0\](.*)$',
+                                  r'\1\2',
+                                  flags = re.DOTALL)
+                    status.append(emsg)
 
             # Array - array or hash - hash.
 
-            elsif (($syntax_type eq 'ARRAY' or $syntax_type eq 'HASH')
-                   and $syntax_type eq $field_type)
-            {
-                verify_node($this,
-                            $data->{$field},
-                            $syn_el,
-                            $path . '->' . $field,
-                            $status);
-            }
+            elif isinstance(syn_el, (list, dict)) \
+                 and type(syn_el) is type(field):
+                self.__verify_node(data[field],
+                                   syn_el,
+                                   f'{path}->{field}',
+                                   status)
 
             # Assorted mismatches.
 
-            elsif ($syntax_type eq '')
-            {
-                $$status .= sprintf('The %s field does not contain a simple '
-                                        . "value.\n",
-                                    $path . '->' . $field);
-            }
-            elsif ($syntax_type eq 'ARRAY')
-            {
-                $$status .= sprintf("The %s field is not a list.\n",
-                                    $path . '->' . $field);
-            }
-            else
-            {
-                $$status .= sprintf("The %s field is not a record.\n",
-                                    $path . '->' . $field);
-            }
+            elif self.__is_scalar(syn_el):
+                status.append(f'The {path}->{field} field does not contain a '
+                              + 'simple value.\n')
+            elif isinstance(syn_el, list):
+                status.append(f'The {path}->{field} field is not a list.\n')
+            else:
+                status.append(f'The {path}->{field} field is not a record.\n')
 
+    def __check_hashes_in_array(syntax: dict[str, Any]) -> int:
+CONT FROM HERE    
+        my $nr_hashes = 0;
+        my $single_typed_field_hashes;
+        my $typed_field_hashes;
+        my $untyped_field_hashes;
+    
+        foreach my $syn_el (@$syntax)
+        {
+            if (ref($syn_el) eq 'HASH')
+            {
+                ++ $nr_hashes;
+                if (keys(%$syn_el) == 1)
+                {
+                    $single_typed_field_hashes = 1;
+    
+                    # Custom fields can't be matched against as they are undefined.
+    
+                    throw('%s(record type fields cannot be of type `c:\').',
+                          SCHEMA_ERROR)
+                        if ((keys(%$syn_el))[0] eq 'c:');
+                }
+                else
+                {
+                    my $nr_typed_keys = 0;
+                    my $typed;
+                    foreach my $syn_key (keys(%$syn_el))
+                    {
+                        if ($syn_key =~ m/^t:/)
+                        {
+                            $typed = 1;
+                            $typed_field_hashes = 1;
+                            ++ $nr_typed_keys;
+                            throw('%s(only one typed field can be present in a '
+                                      . 'record).',
+                                  SCHEMA_ERROR)
+                                if ($nr_typed_keys > 1);
+                        }
+                    }
+                    $untyped_field_hashes = 1 unless ($typed);
+                }
+            }
         }
-
-        return;
-
+    
+        if ($nr_hashes == 1)
+        {
+            return ONE_HASH;
+        }
+        throw('%s(untyped records must be the only record in a list).',
+              SCHEMA_ERROR)
+            if ($untyped_field_hashes);
+        my $state = 0;
+        $state |= SINGLE_FIELD_HASHES if ($single_typed_field_hashes);
+        $state |= TYPED_FIELD_HASHES if ($typed_field_hashes);
+    
+        return $state;
+    
     }
+
+
+
+
+
 
     @staticmethod
     def __is_scalar(item: Any) -> bool:
