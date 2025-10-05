@@ -300,11 +300,10 @@ class Verifier():
                         value = 'undefined value'
                     else:
                         value = f"value `{item}'"
-                    if errs:
-                        msg = ' (' + ' or '.join(errs) + ')'
+                    emsg = ' (' + ' or '.join(errs) + ')' if errs else ''
                     status.append(f"Unexpected {value} found at {path}->[{i}]. "
                                   + "It either doesn't match the expected "
-                                  + f'value format{msg}, or a list or record '
+                                  + f'value format{emsg}, or a list or record '
                                   + 'was expected instead.\n')
 
             # We are comparing arrays.
@@ -325,10 +324,10 @@ class Verifier():
                             Verifier.__logger(f"Comparing `{path}->[{i}]:"
                                               + "(list)' against `(list)'.")
                         local_status = []
-                        selff.__verify_node(item,
-                                            syn_el,
-                                            f'{path}->[{i}]',
-                                            local_status)
+                        self.__verify_node(item,
+                                           syn_el,
+                                           f'{path}->[{i}]',
+                                           local_status)
                         if not local_status:
                             break
                 else:
@@ -460,9 +459,6 @@ class Verifier():
 
             # Ok now check that the value is correct and process it.
 
-            my $syntax_type = ref($syn_el);
-            my $field_type = ref($data->{$field});
-
             if self.__debug:
                 if Verifier.__is_scalar(data[field]):
                     field_str = data[field]
@@ -477,46 +473,40 @@ class Verifier():
 
             # Scalar - scalar.
 
-            if Verifier.__is_scalar(data[field]):
-CONT_FROM_HERE
-            if ($syntax_type eq '' and $field_type eq '')
-            {
-                my $err = '';
-                if (not match_syntax($this, $syn_el, $data->{$field}, \$err))
-                {
-                    $$status .= sprintf('Unexpected %s found at %s. It doesn\'t '
-                                            . 'match the expected value '
-                                            . "format%s.\n",
-                                        defined($data->{$field})
-                                            ? 'value `' . $data->{$field} . '\''
-                                            : 'undefined value',
-                                        $path . '->' . $field,
-                                        ($err ne '') ? " ($err)" : '');
-                }
-            }
+            if Verifier.__is_scalar(syn_el) \
+               and Verifier.__is_scalar(data[field]):
+                err = []
+                if not self.__match_syntax(syn_el, data[field], err):
+                    if data[field] is not None:
+                        msg = f"value `{data[field]}'"
+                    else:
+                        msg = "undefined value"
+                    emsg = f' ({"".join(err)})' if err else ''
+                    status.append(f'Unexpected {msg} found at {path}->{field}. '
+                                  + "It doesn't match the expected value "
+                                  + f'format{emsg}.\n')
 
-            # List of choice values, i.e. a single field that can match against one
-            # of the values in the list (which may include arrays and hashes as well
-            # as scalars).
+            # List of choice values, i.e. a single field that can match against
+            # one of the values in the list (which may include arrays and hashes
+            # as well as scalars).
 
-            elsif ($syntax_type eq 'ARRAY' and $syn_el->[0] =~ m/^l:choice_value/)
-            {
+            elif isinstance(syn_el, list) \
+                 and re.search(r'^l:choice_value', syn_el[0]):
 
-                # This is done simply by faking an array with the one entry being
-                # the data item and then handling it as a standard array. We then
-                # alter any returned message to remove this fake array from the
-                # path.
+                # This is done simply by faking an array with the one entry
+                # being the data item and then handling it as a standard array.
+                # We then alter any returned message to remove this fake array
+                # from the path.
 
-                my $local_status = '';
-                my $new_path = $path . '->' . $field;
-                verify_arrays($this,
-                              [$data->{$field}],
-                              $syn_el,
-                              $new_path,
-                              \$local_status);
-                if ($local_status ne '')
-                {
-                    $local_status =~
+                err = []
+                new_path = f'{path}->{field}'
+                self.__verify_arrays([data[field]],
+                                     syn_el,
+                                     new_path,
+                                     err)
+CONT-FROM-HERE
+                if err:
+                    err $local_status =~
                         s/^(.+? \Q${new_path}\E)->\[0\](.*)$/${1}${2}/s;
                     $$status .= $local_status;
                 }
