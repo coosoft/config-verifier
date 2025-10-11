@@ -1125,6 +1125,7 @@ sub take_typed_hashes_path($this, $data, $syntax, $path, $status, $i)
 
     foreach my $data_key (keys(%{$data->[$i]}))
     {
+# :TODO: Use $syn_key
         my $syn_key = 't:' . $data_key;
         foreach my $syn_el (@$syntax)
         {

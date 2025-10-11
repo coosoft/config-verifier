@@ -46,9 +46,14 @@ from classutils import classinstancemethod
 
 # ***** GLOBAL DATA DECLARATIONS *****
 
-class VerifierError(Exception):
-    pass
+class SchemaError(Exception):
+    '''
+    This class...
+    '''
 
+    def __init__(self, error: str):
+        super().__init__ \
+            (f'Illegal syntax element found in syntax tree ({error}).')
 
 class Verifier():
     '''
@@ -532,66 +537,281 @@ class Verifier():
                 status.append(f'The {path}->{field} field is not a record.\n')
 
     def __check_hashes_in_array(syntax: dict[str, Any]) -> int:
-CONT FROM HERE    
-        my $nr_hashes = 0;
-        my $single_typed_field_hashes;
-        my $typed_field_hashes;
-        my $untyped_field_hashes;
+
+        nr_hashes = 0
+        single_typed_field_hashes = False
+        typed_field_hashes = False
+        untyped_field_hashes = False
+
+        for syn_el in syntax:
+            if isinstance(syn_el, dict):
+                nr_hashes += 1
+                if len(syn_el) == 1:
+                    single_typed_field_hashes = True
+
+                    # Custom fields can't be matched against as they are
+                    # undefined.
+
+                    if 'c:' in syn_el:
+                        raise SchemaError \
+                            ("record type fields cannot be of type `c:'")
+                else:
+                    nr_typed_keys = 0
+                    typed = False
+                    for syn_key in syn_el:
+                        if syn_key.startswith('^t:'):
+                            typed = True
+                            typed_field_hashes = True
+                            nr_typed_keys += 1
+                            if nr_typed_keys > 1:
+                                raise SchemaError('only one typed field can be '
+                                                 + 'present in a record')
+                    if not typed:
+                        untyped_field_hashes = True
+
+        if nr_hashes == 1:
+            return Verifier.__ONE_HASH
+        if untyped_field_hashes:
+            raise SchemaError \
+                ('untyped records must be the only record in a list')
+        state = 0
+        if single_typed_field_hashes: state |= Verifier.__SINGLE_FIELD_HASHES
+        if typed_field_hashes: state |= Verifier.__TYPED_FIELD_HASHES
+
+        return state
+
+    def take_singular_hash_path(self,
+                                data:   dict[str, Any],
+                                syntax: dict[str, Any],
+                                path:   list[str],
+                                status: list[str],
+                                i:      int):
+
+        for syn_el in syntax:
+            if isinstance(syn_el, dict):
+                if self.debug:
+                    Verifier.__logger \
+                        ('Comparing '
+                         + f"`{path}->[{i}]:{'|'.join(data[i].keys())}' "
+                         + f"against `{'|'.join(syn_el.keys())}'.")
+                self.__verify_node(data[i], syn_el, f"{path}->[{i}]", status)
+                return
+
+    def take_typed_hashes_path(self,
+                               data:   dict[str, Any],
+                               syntax: dict[str, Any],
+                               path:   list[str],
+                               status: list[str],
+                               i:      int) -> bool:
+
+        # Look for a special matching type field and value. This will give an
+        # exact match if set up correctly.
+
+        for data_key data[i]:
+            syn_key = f't:{data_key}'
+            for syn_el syntax:
+                if isinstance(syn_el, dict) and syn_key in syn_el \
+                   and self.__match_syntax(syn_el[syn_key], data[i][data_key]):
+                    if self.debug:
+                        Verifier.__logger \
+                            (f"Comparing `{path}->[{i}]:"
+                             + f"{'|'.join(data[i].keys())}' against "
+                             + f"`{'|'.join(syn_el.keys())}' based on type "
+                             + f"field `{data_key}'.")
+                    self.__verify_node(data[i],
+                                       syn_el,
+                                       f'{path}->[{i}]',
+                                       status)
+                    return True
+
+        return False
+
+
+    def take_single_field_hashes_path(self,
+                                      data:   dict[str, Any],
+                                      syntax: dict[str, Any],
+                                      path:   list[str],
+                                      status: list[str],
+                                      i:      int) -> bool:
+
+        data_key = next(iter(data[i]))
+        for syn_el in syntax:
+            if isinstance(syn_el, dict) and len(syn_el) == 1:
+                syn_key = next(iter(syn_el))
+                if self.__match_syntax(syn_key, data_key):
+                    if self.debug:
+                        Verifier.__logger \
+                            (f"Comparing `{path}->[{i}]:{data_key}' against "
+                             + f"`{syn_key}'.")
+                    self.__verify_node(data[i],
+                                       syn_el,
+                                       f'{path}->[{i}]',
+                                       status)
+                    return True
+
+        return False
+
+    def match_syntax(self,
+                     syntax:     dict[str, Any],
+                     value:      str | None | list = (),
+                     error_text: list | None       = None):
+
+        # We don't allow undefined values and so never match.
     
-        foreach my $syn_el (@$syntax)
+        if value is None: return
+
+        # If value hasn't been specified then reset it to undef.
+
+        if isinstance(value, tuple): value = None
+
+        # It's an error if a syntax entry is undefined.
+
+        if syntax is None:
+            raise SchemaError("syntax = `undef'")
+
+        # Decide what to do based upon the header.
+    
+        if match := re.search(r'^([cfilmRrst]):(.*)', syntax):
+            stype = match[1]
+            arg = match[2]
+        else:
+            raise ValueError(f"{Verifier.__SCHEMA_ERROR}(syntax = `{syntax}').")
+        match stype:
+            case 'c':
+                if arg != '':
+                    raise SchemaError(f"syntax = `{syntax}', custom field "
+                                      + 'entries have no name')
+                result = True
+            case 'f':
+                float_re = r'[-+]?(?=\d|\.\d)\d*(?:\.\d*)?(?:[Ee][-+]?\d+)?'
+                if match := re.search(r'^(?:(' + float_re + r'))?(?:,('
+                                          + float_re + r'))?$',
+                                      arg):
+                    (min, max) = (match[1], match[2])
+                    if min is not None and max is not None and min > max:
+                        raise SchemaError(f"syntax = `{syntax}', minimum is "
+                                          + 'greater than maximum')
+                    if value is not None and re.search(float_re, value) \
+                       and (min is None or value >= min)                \
+                       and (max is None or value <= max):
+                        result = True
+                    elif error_text is not None:
+                        error_text.append \
+                            ('float between {min} and <max}'.format \
+                             ('<No Lower Limit>' if min is None else min,
+                              '<No Upper Limit>' if max is None else max))
+                else:
+                    raise SchemaError(f"syntax = `{syntax}'")
+            case 'i':
+CONT FROM HERE
+        elsif ($stype eq 'i')
         {
-            if (ref($syn_el) eq 'HASH')
+            my $int_re = '[-+]?\d+';
+            if ($arg =~ m/^(?:($int_re))?(?:,($int_re)?)?(?:,($int_re)?)?$/)
             {
-                ++ $nr_hashes;
-                if (keys(%$syn_el) == 1)
+                my ($min, $max, $step) = ($1, $2, $3);
+                throw('%s(syntax = `%s\', minimum is greater than maximum).',
+                      SCHEMA_ERROR,
+                      $syntax)
+                    if (defined($min) and defined($max) and $min  > $max);
+                throw('%s(syntax = `%s\', minimum/maximum values are not '
+                          . 'compatible with step value).',
+                      SCHEMA_ERROR,
+                      $syntax)
+                    if (defined($step)
+                        and ((defined($min) and ($min % $step) != 0)
+                             or (defined($max) and ($max % $step) != 0)));
+                if (defined($value)
+                    and $value =~ m/^$int_re$/
+                    and (not defined($min) or $value >= $min)
+                    and (not defined($max) or $value <= $max)
+                    and (not defined($step) or ($value % $step) == 0))
                 {
-                    $single_typed_field_hashes = 1;
+                    $result = 1;
+                }
+                elsif (defined($error_text))
+                {
+                    $$error_text =
+                        sprintf('integer between %s and %s%s',
+                                defined($min) ? $min : '<No Lower Limit>',
+                                defined($max) ? $max : '<No Upper Limit>',
+                                defined($step) ? " with a step size of $step" : '');
+                }
+            }
+            else
+            {
+                throw('%s(syntax = `%s\').', SCHEMA_ERROR, $syntax);
+            }
+        }
+        elsif ($stype eq 'l')
+        {
     
-                    # Custom fields can't be matched against as they are undefined.
+            # List types are special in that they are ignored when matching data
+            # values, but they determine the way arrays of entries are handled. So
+            # we only check the validity of their setting.
     
-                    throw('%s(record type fields cannot be of type `c:\').',
-                          SCHEMA_ERROR)
-                        if ((keys(%$syn_el))[0] eq 'c:');
+            throw('%s(syntax = `%s\', stype of list is must be `choice_list\' or '
+                      . '`choice_value\' optionally followed by '
+                      . '`,allow_empty_list\').',
+                  SCHEMA_ERROR,
+                  $syntax)
+                if ($arg !~ m/^choice_(?:list|value)(?:,allow_empty_list)?$/);
+    
+        }
+        elsif ($stype eq 'R')
+        {
+            if (exists($this->{syntax_regexes}->{$arg}))
+            {
+                $result = 1
+                    if (defined($value)
+                        and $value =~ m/$this->{syntax_regexes}->{$arg}/);
+            }
+            else
+            {
+                throw('%s(syntax = `%s\', unknown syntactic regular expression).',
+                      SCHEMA_ERROR,
+                      $syntax);
+            }
+        }
+        elsif ($stype eq 'r')
+        {
+            throw('`%s\' is not anchored to the start and end of the string.',
+                  $arg)
+                if ($arg !~ m/^\^.*\$$/);
+            local $@;
+            eval
+            {
+                if (defined($value))
+                {
+                    $result = 1 if ($value =~ m/$arg/);
                 }
                 else
                 {
-                    my $nr_typed_keys = 0;
-                    my $typed;
-                    foreach my $syn_key (keys(%$syn_el))
-                    {
-                        if ($syn_key =~ m/^t:/)
-                        {
-                            $typed = 1;
-                            $typed_field_hashes = 1;
-                            ++ $nr_typed_keys;
-                            throw('%s(only one typed field can be present in a '
-                                      . 'record).',
-                                  SCHEMA_ERROR)
-                                if ($nr_typed_keys > 1);
-                        }
-                    }
-                    $untyped_field_hashes = 1 unless ($typed);
+                    my $dummy = qr/$arg/;
                 }
+                1;
             }
+            or do
+            {
+                my $err = $@;
+                $err =~ s/ at .+ line \d+\..*//gs;
+                throw($err);
+            };
         }
-    
-        if ($nr_hashes == 1)
+        else
         {
-            return ONE_HASH;
+            $result = 1 if (defined($value) and $arg eq $value);
         }
-        throw('%s(untyped records must be the only record in a list).',
-              SCHEMA_ERROR)
-            if ($untyped_field_hashes);
-        my $state = 0;
-        $state |= SINGLE_FIELD_HASHES if ($single_typed_field_hashes);
-        $state |= TYPED_FIELD_HASHES if ($typed_field_hashes);
     
-        return $state;
+        logger('Comparing `%s\' against `%s\'. Match: %s.',
+               $syntax,
+               $value,
+               ($result) ? 'Yes' : 'No')
+            if ($this->{debug} and defined($value));
+    
+        return $result;
     
     }
-
-
-
 
 
 
@@ -603,6 +823,9 @@ CONT FROM HERE
     @staticmethod
     def __logger(msg: str):
         print(msg, file = sys.stderr)
+
+
+
 
 
 def main():
@@ -733,257 +956,6 @@ if __name__ == '__main__':
 #use parent qw(Exporter);
 #
 #our $VERSION = '1.0';
-##
-###############################################################################
-##
-##   Routine      - check_hashes_in_array
-##
-##   Description  - Checks the specified syntax array checking that the hashes
-##                  must be typed in some way if more than one hash is present.
-##
-##   Data         - $syntax      : A reference to that part of the syntax tree
-##                                 that is going to be checked.
-##                  Return Value : A bit mask with bits set according to what
-##                                 was found.
-##
-###############################################################################
-#
-#
-#
-#sub check_hashes_in_array($syntax)
-#{
-#
-#    my $nr_hashes = 0;
-#    my $single_typed_field_hashes;
-#    my $typed_field_hashes;
-#    my $untyped_field_hashes;
-#
-#    foreach my $syn_el (@$syntax)
-#    {
-#        if (ref($syn_el) eq 'HASH')
-#        {
-#            ++ $nr_hashes;
-#            if (keys(%$syn_el) == 1)
-#            {
-#                $single_typed_field_hashes = 1;
-#
-#                # Custom fields can't be matched against as they are undefined.
-#
-#                throw('%s(record type fields cannot be of type `c:\').',
-#                      SCHEMA_ERROR)
-#                    if ((keys(%$syn_el))[0] eq 'c:');
-#            }
-#            else
-#            {
-#                my $nr_typed_keys = 0;
-#                my $typed;
-#                foreach my $syn_key (keys(%$syn_el))
-#                {
-#                    if ($syn_key =~ m/^t:/)
-#                    {
-#                        $typed = 1;
-#                        $typed_field_hashes = 1;
-#                        ++ $nr_typed_keys;
-#                        throw('%s(only one typed field can be present in a '
-#                                  . 'record).',
-#                              SCHEMA_ERROR)
-#                            if ($nr_typed_keys > 1);
-#                    }
-#                }
-#                $untyped_field_hashes = 1 unless ($typed);
-#            }
-#        }
-#    }
-#
-#    if ($nr_hashes == 1)
-#    {
-#        return ONE_HASH;
-#    }
-#    throw('%s(untyped records must be the only record in a list).',
-#          SCHEMA_ERROR)
-#        if ($untyped_field_hashes);
-#    my $state = 0;
-#    $state |= SINGLE_FIELD_HASHES if ($single_typed_field_hashes);
-#    $state |= TYPED_FIELD_HASHES if ($typed_field_hashes);
-#
-#    return $state;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - take_singular_hash_path
-##
-##   Description  - Checks the specified syntax array looking for a singular
-##                  hash and then takes that path.
-##
-##   Data         - $this   : The internal private object.
-##                  $data   : A reference to the array data item within the
-##                            record that is to be checked.
-##                  $syntax : A reference to that part of the syntax tree that
-##                            is going to be used to check the data referenced
-##                            by $data.
-##                  $path   : A string containing the current path through the
-##                            record for the current item in $data.
-##                  $status : A reference to a string that is to contain a
-##                            description of what is wrong. If everything is ok
-##                            then this string will be empty.
-##                  $i      : The current index in the data array.
-##
-###############################################################################
-#
-#
-#
-#sub take_singular_hash_path($this, $data, $syntax, $path, $status, $i)
-#{
-#
-#    foreach my $syn_el (@$syntax)
-#    {
-#        if (ref($syn_el) eq 'HASH')
-#        {
-#            logger('Comparing `%s->[%u]:%s\' against `%s\'.',
-#                   $path,
-#                   $i,
-#                   join('|', keys(%{$data->[$i]})),
-#                   join('|', keys(%$syn_el)))
-#                if ($this->{debug});
-#            verify_node($this,
-#                        $data->[$i],
-#                        $syn_el,
-#                        $path . '->[' . $i . ']',
-#                        $status);
-#            return;
-#        }
-#    }
-#
-#    return;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - take_typed_hashes_path
-##
-##   Description  - Checks the specified syntax array checking for only hashes
-##                  that contain special typed fields and then takes the path
-##                  of a matching hash.
-##
-##   Data         - $this        : The internal private object.
-##                  $data        : A reference to the array data item within
-##                                 the record that is to be checked.
-##                  $syntax      : A reference to that part of the syntax tree
-##                                 that is going to be used to check the data
-##                                 referenced by $data.
-##                  $path        : A string containing the current path through
-##                                 the record for the current item in $data.
-##                  $status      : A reference to a string that is to contain a
-##                                 description of what is wrong. If everything
-##                                 is ok then this string will be empty.
-##                  $i           : The current index in the data array.
-##                  Return Value : True if a path was taken, otherwise false if
-##                                 not.
-##
-###############################################################################
-#
-#
-#
-#sub take_typed_hashes_path($this, $data, $syntax, $path, $status, $i)
-#{
-#
-#    # Look for a special matching type field and value. This will give an exact
-#    # match if set up correctly.
-#
-#    foreach my $data_key (keys(%{$data->[$i]}))
-#    {
-#        my $syn_key = 't:' . $data_key;
-#        foreach my $syn_el (@$syntax)
-#        {
-#            if (ref($syn_el) eq 'HASH'
-#                and exists($syn_el->{'t:' . $data_key})
-#                and match_syntax($this,
-#                                 $syn_el->{'t:' . $data_key},
-#                                 $data->[$i]->{$data_key}))
-#            {
-#                logger('Comparing `%s->[%u]:%s\' against `%s\' based on type '
-#                           . 'field `%s\'.',
-#                       $path,
-#                       $i,
-#                       join('|', keys(%{$data->[$i]})),
-#                       join('|', keys(%$syn_el)),
-#                       $data_key)
-#                    if ($this->{debug});
-#                verify_node($this,
-#                            $data->[$i],
-#                            $syn_el,
-#                            $path . '->[' . $i . ']',
-#                            $status);
-#                return 1;
-#            }
-#        }
-#    }
-#
-#    return;
-#
-#}
-##
-###############################################################################
-##
-##   Routine      - take_single_field_hashes_path
-##
-##   Description -  Checks the specified syntax array checking for hashes that
-##                  contain only one field and then takes the path of a
-##                  matching hash.
-##
-##   Data         - $this        : The internal private object.
-##                  $data        : A reference to the array data item within
-##                                 the record that is to be checked.
-##                  $syntax      : A reference to that part of the syntax tree
-##                                 that is going to be used to check the data
-##                                 referenced by $data.
-##                  $path        : A string containing the current path through
-##                                 the record for the current item in $data.
-##                  $status      : A reference to a string that is to contain a
-##                                 description of what is wrong. If everything
-##                                 is ok then this string will be empty.
-##                  $i           : The current index in the data array.
-##                  Return Value : True if a path was taken, otherwise false if
-##                                 not.
-##
-###############################################################################
-#
-#
-#
-#sub take_single_field_hashes_path($this, $data, $syntax, $path, $status, $i)
-#{
-#
-#    my $data_key = (keys(%{$data->[$i]}))[0];
-#    foreach my $syn_el (@$syntax)
-#    {
-#        if (ref($syn_el) eq 'HASH' and keys(%$syn_el) == 1)
-#        {
-#            my $syn_key = (keys(%$syn_el))[0];
-#            if (match_syntax($this, $syn_key, $data_key))
-#            {
-#                logger('Comparing `%s->[%u]:%s\' against `%s\'.',
-#                       $path,
-#                       $i,
-#                       $data_key,
-#                       $syn_key)
-#                    if ($this->{debug});
-#                verify_node($this,
-#                            $data->[$i],
-#                            $syn_el,
-#                            $path . '->[' . $i . ']',
-#                            $status);
-#                return 1;
-#            }
-#
-#        }
-#    }
-#
-#    return;
-#
-#}
 ##
 ###############################################################################
 ##
