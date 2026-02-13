@@ -40,10 +40,6 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
-# Project Python packages.
-
-from classutils import classinstancemethod
-
 # ***** GLOBAL DATA DECLARATIONS *****
 
 class SchemaError(Exception):
@@ -60,6 +56,12 @@ class Verifier():
     This class....
     '''
 
+    class classinstancemethod(classmethod):
+        def __get__(self, instance, type_):
+            descriptor_get = super().__get__ if instance is None \
+                else self.__func__.__get__
+            return descriptor_get(instance, type_)
+
     # ***** CLASS DATA DECLARATIONS *****
 
     # Constants representing the state of hashes in a syntax array.
@@ -67,10 +69,6 @@ class Verifier():
     __ONE_HASH            = 0x01
     __SINGLE_FIELD_HASHES = 0x02
     __TYPED_FIELD_HASHES  = 0x04
-
-    # Constants for assorted messages.
-
-    __SCHEMA_ERROR = 'Illegal syntax element found in syntax tree '
 
     # Lookup hashes for converting assorted measures.
 
@@ -93,17 +91,14 @@ class Verifier():
                  'GiB' : 1_073_741_824,
                  'TiB' : 1_099_511_627_776}
 
-    # A lookup hash containing regexes in the form or plain strings that will
+    # A lookup hash containing regexes in the form of plain strings that will
     # get replaced by their compiled counterparts, whilst having their
     # non-capturing counterparts added to the %Syntax_Regexes hash below. This
     # reduces maintenance and mistakes.
 
-    __CAPTURING_REGEXES = \
-        {'amount'      : re.compile(r'^([-+]?\d+(?:\.\d+)?)([KMGT])?$'),
-         'amount_data' : re.compile(r'^(\d+)((?:[KMGT]i?)?[Bb])$'),
-         'duration'    : re.compile(r'^(\d+)(ms|[smhdw])$')}
-
-
+    __capturing_regexes = {'amount'      : r'^([-+]?\d+(?:\.\d+)?)([KMGT])?$',
+                           'amount_data' : r'^(\d+)((?:[KMGT]i?)?[Bb])$',
+                           'duration'    : r'^(\d+)(ms|[smhdw])$'}
 
     # A lookup hash for common syntactic elements. Please note the (?!.)
     # sequence at the end matches nothing, i.e. '' and undef should go to false.
@@ -112,14 +107,14 @@ class Verifier():
     __syntax_regexes = \
         {'anything'  : re.compile(r'^.+$'),
          'boolean'   : re.compile(r'^(?i:true|yes|y|on|1|'
-                                  + r'false|no|n|off|0|(?!.))$'),
+                                  r'false|no|n|off|0|(?!.))$'),
          'name'      : re.compile(r'^[-_.' + "'" + r'"()\[\] a-zA-Z0-9]+$'),
          'plugin'    : re.compile(r'^[-_.a-zA-Z0-9]+$'),
          'printable' : re.compile(r'^[^\x00-\x1f\x7f]+$'),
          'string'    : re.compile(r'^[-_. a-zA-Z0-9]+$'),
          'unix_path' : re.compile(r'^(?:(?!.*\\/|.*\000).)+$'),
          'user_name' : re.compile(r'^[-_a-zA-Z0-9]+[-_a-zA-Z0-9 ]+'
-                                  + r'[-_a-zA-Z0-9]+$'),
+                                  r'[-_a-zA-Z0-9]+$'),
          'variable'  : re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]+$')}
 
     # Decorator for class and instance methods.
@@ -143,8 +138,8 @@ class Verifier():
     def amount_to_units(cls, value: str, want_bits: bool = False) -> float:
         units = 0
         if (not want_bits
-            and (m := cls.__CAPTURING_REGEXES['amount'].search(value))) \
-           or (m := cls.__CAPTURING_REGEXES['amount_data'].search(value)):
+            and (m := cls.__capturing_regexes['amount'].search(value))) \
+           or (m := cls.__capturing_regexes['amount_data'].search(value)):
             amount = float(m.group(1))
             unit = m.group(2)
             if unit:
@@ -164,7 +159,7 @@ class Verifier():
     @classmethod
     def duration_to_seconds(cls, duration: str) -> int | float:
         seconds = 0
-        if m := cls.__CAPTURING_REGEXES['duration'].search(duration):
+        if m := cls.__capturing_regexes['duration'].search(duration):
             amount = float(m.group(1))
             unit = m.group(2)
             if unit == 'ms':
@@ -190,8 +185,8 @@ class Verifier():
                 (f"`{name}' is not a suitable syntax element name.")
         if not re.search(r'^\^.*\$$', regex):
             raise VerifierError(f"`{regex}' is not anchored to the start and "
-                                + 'end of the string.')
-        if name in Verifier.__CAPTURING_REGEXES or name == 'boolean':
+                                'end of the string.')
+        if name in Verifier.__capturing_regexes or name == 'boolean':
             raise VerifierError(f"Changing `{name}' is not permitted.")
 
         # Register it.
@@ -248,7 +243,7 @@ class Verifier():
 
             case _:
                 raise VerifierError('Syntax tree has unsupported element of '
-                                    + f"type `{type(syntax)}'.")
+                                    f"type `{type(syntax)}'.")
 
     def __verify_node(self,
                       data:   dict[str, Any],
@@ -294,7 +289,7 @@ class Verifier():
                     if Verifier.__is_scalar(syn_el):
                         if self.__debug:
                             Verifier.__logger(f"Comparing `{path}->[{i}]:"
-                                              + f"{item}' against `{syn_el}'.")
+                                              f"{item}' against `{syn_el}'.")
                         err = []
                         if self.__match_syntax(syn_el, item, err):
                             break
@@ -307,9 +302,9 @@ class Verifier():
                         value = f"value `{item}'"
                     emsg = ' (' + ' or '.join(errs) + ')' if errs else ''
                     status.append(f"Unexpected {value} found at {path}->[{i}]. "
-                                  + "It either doesn't match the expected "
-                                  + f'value format{emsg}, or a list or record '
-                                  + 'was expected instead.\n')
+                                  "It either doesn't match the expected value "
+                                  f'format{emsg}, or a list or record was '
+                                  'expected instead.\n')
 
             # We are comparing arrays.
 
@@ -327,7 +322,7 @@ class Verifier():
                     if isinstance(syn_el, list):
                         if self.__debug:
                             Verifier.__logger(f"Comparing `{path}->[{i}]:"
-                                              + "(list)' against `(list)'.")
+                                              "(list)' against `(list)'.")
                         local_status = []
                         self.__verify_node(item,
                                            syn_el,
@@ -384,8 +379,8 @@ class Verifier():
                                                                 i):
                         break
                     status.append('Unexpected single type field record with a '
-                                  + f"type name of `{item[0].keys()}' found at "
-                                  + f"{path}->[{i}].\n")
+                                  f"type name of `{item[0].keys()}' found at "
+                                  f"{path}->[{i}].\n")
 
                 # We have multiple fields in the data hash so one of them must
                 # be explicitly typed with `t:'.
@@ -399,20 +394,20 @@ class Verifier():
                                                          i):
                         break
                     status.append('Unexpected multi-field record that is '
-                                  + 'either untyped or an unrecognised type '
-                                  + f'found at {path}->[{i}].\n')
+                                  'either untyped or an unrecognised type '
+                                  f'found at {path}->[{i}].\n')
 
             # We have something other than a scalar, array or hash. This isn't
             # supported.
 
             else:
                 status.append(f"Unsupported data type `{type(item)}' found at "
-                              + f'{path}->[{i}].\n')
+                              f'{path}->[{i}].\n')
 
         # Unlikely but just check for empty arrays.
 
         if not data and not re.search(r'^l:choice_(?:list|value)'
-                                          + r'(?:,allow_empty_list)?$',
+                                          r'(?:,allow_empty_list)?$',
                                       syntax[0]):
             status.append(f'Empty list found at {path}. This is not allowed.\n')
 
@@ -428,8 +423,8 @@ class Verifier():
             if mandatory_field := re.search(r'^[mt]:(.+)$', key):
                 if mandatory_field[1] not in data:
                     status.append(f'The {path} record does not contain the '
-                                  + 'mandatory field `'
-                                  + f"{mandatory_field[1]}'.\n")
+                                  'mandatory field `'
+                                  f"{mandatory_field[1]}'.\n")
 
         # Check each field.
 
@@ -454,7 +449,7 @@ class Verifier():
 
             if syn_el is None:
                 status.append(f'The {path} %s record contains an invalid field '
-                              + f"`{field}'.\n")
+                              f"`{field}'.\n")
                 continue
 
             # Skip custom fields.
@@ -474,7 +469,7 @@ class Verifier():
                 else:
                     syn_el_str = f'({type(syn_el)})'
                 logger(f"Comparing `{path}->{field}:{field_str}' against "
-                       + f"`{syn_el_st}'.")
+                       f"`{syn_el_st}'.")
 
             # Scalar - scalar.
 
@@ -488,8 +483,8 @@ class Verifier():
                         msg = 'undefined value'
                     emsg = f' ({"".join(err)})' if err else ''
                     status.append(f'Unexpected {msg} found at {path}->{field}. '
-                                  + "It doesn't match the expected value "
-                                  + f'format{emsg}.\n')
+                                  "It doesn't match the expected value "
+                                  f'format{emsg}.\n')
 
             # List of choice values, i.e. a single field that can match against
             # one of the values in the list (which may include arrays and hashes
@@ -530,7 +525,7 @@ class Verifier():
 
             elif self.__is_scalar(syn_el):
                 status.append(f'The {path}->{field} field does not contain a '
-                              + 'simple value.\n')
+                              'simple value.\n')
             elif isinstance(syn_el, list):
                 status.append(f'The {path}->{field} field is not a list.\n')
             else:
@@ -565,7 +560,7 @@ class Verifier():
                             nr_typed_keys += 1
                             if nr_typed_keys > 1:
                                 raise SchemaError('only one typed field can be '
-                                                 + 'present in a record')
+                                                  'present in a record')
                     if not typed:
                         untyped_field_hashes = True
 
@@ -592,8 +587,8 @@ class Verifier():
                 if self.debug:
                     Verifier.__logger \
                         ('Comparing '
-                         + f"`{path}->[{i}]:{'|'.join(data[i].keys())}' "
-                         + f"against `{'|'.join(syn_el.keys())}'.")
+                         f"`{path}->[{i}]:{'|'.join(data[i].keys())}' "
+                         f"against `{'|'.join(syn_el.keys())}'.")
                 self.__verify_node(data[i], syn_el, f"{path}->[{i}]", status)
                 return
 
@@ -615,9 +610,9 @@ class Verifier():
                     if self.debug:
                         Verifier.__logger \
                             (f"Comparing `{path}->[{i}]:"
-                             + f"{'|'.join(data[i].keys())}' against "
-                             + f"`{'|'.join(syn_el.keys())}' based on type "
-                             + f"field `{data_key}'.")
+                             f"{'|'.join(data[i].keys())}' against "
+                             f"`{'|'.join(syn_el.keys())}' based on type "
+                             f"field `{data_key}'.")
                     self.__verify_node(data[i],
                                        syn_el,
                                        f'{path}->[{i}]',
@@ -642,7 +637,7 @@ class Verifier():
                     if self.debug:
                         Verifier.__logger \
                             (f"Comparing `{path}->[{i}]:{data_key}' against "
-                             + f"`{syn_key}'.")
+                             f"`{syn_key}'.")
                     self.__verify_node(data[i],
                                        syn_el,
                                        f'{path}->[{i}]',
@@ -657,7 +652,7 @@ class Verifier():
                      error_text: list | None       = None):
 
         # We don't allow undefined values and so never match.
-    
+
         if value is None: return
 
         # If value hasn't been specified then reset it to undef.
@@ -670,18 +665,20 @@ class Verifier():
             raise SchemaError("syntax = `undef'")
 
         # Decide what to do based upon the header.
-    
+
         if match := re.search(r'^([cfilmRrst]):(.*)', syntax):
             stype = match[1]
             arg = match[2]
         else:
-            raise ValueError(f"{Verifier.__SCHEMA_ERROR}(syntax = `{syntax}').")
+            raise SchemaError(f"syntax = `{syntax}'")
         match stype:
+
             case 'c':
                 if arg != '':
                     raise SchemaError(f"syntax = `{syntax}', custom field "
-                                      + 'entries have no name')
+                                      'entries have no name')
                 result = True
+
             case 'f':
                 float_re = r'[-+]?(?=\d|\.\d)\d*(?:\.\d*)?(?:[Ee][-+]?\d+)?'
                 if match := re.search(r'^(?:(' + float_re + r'))?(?:,('
@@ -697,123 +694,91 @@ class Verifier():
                         result = True
                     elif error_text is not None:
                         error_text.append \
-                            ('float between {min} and <max}'.format \
+                            ('float between {} and {}'.format \
                              ('<No Lower Limit>' if min is None else min,
                               '<No Upper Limit>' if max is None else max))
                 else:
                     raise SchemaError(f"syntax = `{syntax}'")
+
             case 'i':
-CONT FROM HERE
-        elsif ($stype eq 'i')
-        {
-            my $int_re = '[-+]?\d+';
-            if ($arg =~ m/^(?:($int_re))?(?:,($int_re)?)?(?:,($int_re)?)?$/)
-            {
-                my ($min, $max, $step) = ($1, $2, $3);
-                throw('%s(syntax = `%s\', minimum is greater than maximum).',
-                      SCHEMA_ERROR,
-                      $syntax)
-                    if (defined($min) and defined($max) and $min  > $max);
-                throw('%s(syntax = `%s\', minimum/maximum values are not '
-                          . 'compatible with step value).',
-                      SCHEMA_ERROR,
-                      $syntax)
-                    if (defined($step)
-                        and ((defined($min) and ($min % $step) != 0)
-                             or (defined($max) and ($max % $step) != 0)));
-                if (defined($value)
-                    and $value =~ m/^$int_re$/
-                    and (not defined($min) or $value >= $min)
-                    and (not defined($max) or $value <= $max)
-                    and (not defined($step) or ($value % $step) == 0))
-                {
-                    $result = 1;
-                }
-                elsif (defined($error_text))
-                {
-                    $$error_text =
-                        sprintf('integer between %s and %s%s',
-                                defined($min) ? $min : '<No Lower Limit>',
-                                defined($max) ? $max : '<No Upper Limit>',
-                                defined($step) ? " with a step size of $step" : '');
-                }
-            }
-            else
-            {
-                throw('%s(syntax = `%s\').', SCHEMA_ERROR, $syntax);
-            }
-        }
-        elsif ($stype eq 'l')
-        {
-    
-            # List types are special in that they are ignored when matching data
-            # values, but they determine the way arrays of entries are handled. So
-            # we only check the validity of their setting.
-    
-            throw('%s(syntax = `%s\', stype of list is must be `choice_list\' or '
-                      . '`choice_value\' optionally followed by '
-                      . '`,allow_empty_list\').',
-                  SCHEMA_ERROR,
-                  $syntax)
-                if ($arg !~ m/^choice_(?:list|value)(?:,allow_empty_list)?$/);
-    
-        }
-        elsif ($stype eq 'R')
-        {
-            if (exists($this->{syntax_regexes}->{$arg}))
-            {
-                $result = 1
-                    if (defined($value)
-                        and $value =~ m/$this->{syntax_regexes}->{$arg}/);
-            }
-            else
-            {
-                throw('%s(syntax = `%s\', unknown syntactic regular expression).',
-                      SCHEMA_ERROR,
-                      $syntax);
-            }
-        }
-        elsif ($stype eq 'r')
-        {
-            throw('`%s\' is not anchored to the start and end of the string.',
-                  $arg)
-                if ($arg !~ m/^\^.*\$$/);
-            local $@;
-            eval
-            {
-                if (defined($value))
-                {
-                    $result = 1 if ($value =~ m/$arg/);
-                }
-                else
-                {
-                    my $dummy = qr/$arg/;
-                }
-                1;
-            }
-            or do
-            {
-                my $err = $@;
-                $err =~ s/ at .+ line \d+\..*//gs;
-                throw($err);
-            };
-        }
-        else
-        {
-            $result = 1 if (defined($value) and $arg eq $value);
-        }
-    
-        logger('Comparing `%s\' against `%s\'. Match: %s.',
-               $syntax,
-               $value,
-               ($result) ? 'Yes' : 'No')
-            if ($this->{debug} and defined($value));
-    
-        return $result;
-    
-    }
+                int_re = '[-+]?\d+'
+                if match := re.search(r'^(?:(' + int_re + r'))?(?:,('
+                                          + int_re + r')?)?(?:,(' + int_re
+                                          + r')?)?$',
+                                      arg):
+                    (min, max, step) = (match[1], match[2], match[3])
+                    if min is not None and max is not None and min > max:
+                        raise SchemaError(f"syntax = `{syntax}', minimum is "
+                                          'greater than maximum')
+                    if step is not None \
+                       and ((min is not None and (min % step) != 0)
+                            or (max is not None and (max % step) != 0)):
+                        raise SchemaError(f"syntax = `{syntax}', "
+                                          'minimum/maximum values are not '
+                                          'compatible with step value')
+                    if value is not None and re.search(int_re, value) \
+                       and (min is None or value >= min)             \
+                       and (max is None or value <= max)             \
+                       and (step is None or (value % step) == 0):
+                        result = True
+                    elif error_text is not None:
+                        error_text.append \
+                            ('integer between {} and {}{}'.format \
+                             ('<No Lower Limit>' if min is None else min,
+                              '<No Upper Limit>' if max is None else max,
+                              '' if step is None else
+                                  f' with a step size of {step}'))
+                else:
+                    raise SchemaError(f"syntax = `{syntax}'")
 
+            case 'l':
 
+                # List types are special in that they are ignored when matching
+                # data values, but they determine the way arrays of entries are
+                # handled. So we only check the validity of their setting.
+
+                if not re.search(r'^choice_(?:list|value)'
+                                     r'(?:,allow_empty_list)?$',
+                                 arg):
+                    raise SchemaError(f"syntax = `{syntax}', stype of list is "
+                                      "must be `choice_list' or `choice_value' "
+                                      "optionally followed by "
+                                      "`,allow_empty_list'")
+
+            case 'R':
+                if arg in self.__syntax_regexes:
+                    if value is not None \
+                       and re.search(self.__syntax_regexes[arg], value):
+                        result = True
+                else:
+                    raise SchemaError(f"syntax = `{syntax}', unknown syntactic "
+                                      'regular expression')
+
+            case 'r':
+                if not re.search(r'^\^.*\$$', arg):
+                    raise VerifierError(f"`{arg}' is not anchored to the start "
+                                        'and end of the string.')
+                try:
+                    if value is not None:
+                        if re.search(arg, value):
+                            result = True
+                    else:
+                        dummy = re.compile(arg)
+                except Exception as e:
+                    err = str(e)
+                    raise VerifierError(re.sub(r' at .+ line \d+\..*',
+                                               '',
+                                               str(e),
+                                               flags = re.DOTALL))
+
+            case _:
+                if value is not None and arg == value:
+                    result = True
+
+        Verifier.__logger("Comparing `{}' against `{}'. Match: {}."
+                          .format(syntax, value, 'Yes' if result else 'No'))
+
+        return result
 
     @staticmethod
     def __is_scalar(item: Any) -> bool:
