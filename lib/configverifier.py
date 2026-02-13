@@ -584,7 +584,7 @@ class Verifier():
 
         for syn_el in syntax:
             if isinstance(syn_el, dict):
-                if self.debug:
+                if self.__debug:
                     Verifier.__logger \
                         ('Comparing '
                          f"`{path}->[{i}]:{'|'.join(data[i].keys())}' "
@@ -607,7 +607,7 @@ class Verifier():
             for syn_el syntax:
                 if isinstance(syn_el, dict) and syn_key in syn_el \
                    and self.__match_syntax(syn_el[syn_key], data[i][data_key]):
-                    if self.debug:
+                    if self.__debug:
                         Verifier.__logger \
                             (f"Comparing `{path}->[{i}]:"
                              f"{'|'.join(data[i].keys())}' against "
@@ -634,7 +634,7 @@ class Verifier():
             if isinstance(syn_el, dict) and len(syn_el) == 1:
                 syn_key = next(iter(syn_el))
                 if self.__match_syntax(syn_key, data_key):
-                    if self.debug:
+                    if self.__debug:
                         Verifier.__logger \
                             (f"Comparing `{path}->[{i}]:{data_key}' against "
                              f"`{syn_key}'.")
